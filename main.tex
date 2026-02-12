@@ -1,0 +1,159 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{graphicx}
+
+\title{Disk and File Structures --- Lecture Notes}
+\author{CS186 - Database Systems}
+\date{Lecture 3 -- January 28, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{The Big Picture: DBMS Architecture}
+
+A user writes a SQL query, and somehow the right data comes back. In between, the DBMS handles several layers of work:
+
+\begin{enumerate}
+    \item \textbf{Parsing:} Check that the query is valid---tables and columns exist, syntax is correct.
+    \item \textbf{Query planning and optimization:} Find an efficient way to execute the query (covered in later lectures).
+    \item \textbf{Execution:} Run the plan, which ultimately requires reading data from disk.
+    \item \textbf{File and disk management:} Decide which files to open, which pages to read, and how to transfer data between disk and memory.
+\end{enumerate}
+
+Each layer is an \textbf{abstraction} that hides the complexity beneath it. The user sees a flat relation with rows and columns. Underneath, the data may live in heap files, spread across disk pages, organized in packed or slotted layouts---none of which the user needs to know. This is \textbf{physical data independence}.
+
+This lecture focuses on the bottom layers: how the DBMS stores data on disk and organizes it within files and pages.
+
+\section{The DBMS Manages Its Own Storage}
+
+A key design decision: \textbf{the data base management system does not rely on the OS file system for page management.}
+
+The OS treats the DBMS as just another application. It doesn't know the query workload, so it can't make smart decisions like prefetching pages for a \texttt{SELECT *} scan. Instead, the DBMS asks the OS for one large file and manages pages within it internally. This lets the DBMS:
+
+\begin{itemize}
+    \item Control which pages are read and when.
+    \item Prefetch pages when the query makes future reads predictable (e.g., a full table scan on a table spanning 10 blocks means we know we need all 10).
+    \item Exploit knowledge of access patterns---for example, if a concert ticket table is being hit heavily, prefetch its blocks in advance.
+\end{itemize}
+
+For this course, assume \textbf{one file per relation} on a single disk.
+
+
+\section{Amortizing Disk I/O and Prefetching}
+
+Since disk access is expensive, we want to \textbf{amortize} the cost by doing as much useful work per access as possible:
+
+\begin{itemize}
+    \item If pages for a table are stored \textbf{sequentially on disk}, we can read them in one sweep rather than jumping the disk arm around. This is much cheaper than scattered reads.
+    \item If we can \textbf{predict future reads}, we can prefetch. Two sources of prediction:
+    \begin{itemize}
+        \item \textbf{The query itself:} \texttt{SELECT * FROM sailors} tells us we need every page of the sailors table.
+        \item \textbf{Past access patterns:} If a table has been read frequently (e.g., during a ticket sale), it will likely be read again soon.
+    \end{itemize}
+\end{itemize}
+
+
+\section{Heap File Organization}
+
+A \textbf{heap file} is the simplest file structure: records are stored with no particular ordering. As tuples are inserted or deleted, pages are allocated or freed as needed.
+
+To support basic operations (scan all records, insert, delete, retrieve by record ID), we need to track which pages exist and how much free space each has.
+
+\subsection{Design 1: Linked List}
+
+\begin{figure}[H]
+    \centering  \includegraphics[width=0.8\textwidth]{images/heap_linkedlist.png}
+    \caption{Heap file organized as a doubly linked list}
+    \label{fig:heap_linkedlist}
+\end{figure}
+
+\begin{itemize}
+    \item A \textbf{header page} points to two doubly linked lists: one of \textbf{full pages} and one of \textbf{pages with free space}.
+    \item Each page stores a pointer to the next page and the previous page.
+\end{itemize}
+
+\textbf{Problem:} To insert a record, we need a page with enough free space. We may have to walk many links in the free-space list before finding one that fits (e.g., for a 20-byte record, many free pages might not have 20 bytes left). Retrieval of a specific record by ID also requires walking through pages sequentially.
+
+\subsection{Design 2: Page Directory}
+
+\begin{itemize}
+\begin{figure}[H]
+    \centering  \includegraphics[width=0.4\textwidth]{images/heap_directory.png}
+    \caption{Heap file organized using a directory}
+    \label{fig:heap_map}
+\end{figure}
+    \item A \textbf{directory} stores, for each page, a pointer to the page and the amount of free space it has.
+    \item To insert, look up the directory for a page with sufficient space and jump directly to it---no linked list traversal.
+    \item The directory can itself span multiple pages (a ``directory of directories'') if needed, though too many layers hit diminishing returns.
+\end{itemize}
+
+\textbf{Improvement over linked list:} Insertion is faster because we can locate a suitable page in one lookup instead of walking a chain. Full pages still appear in the directory (with free space recorded as zero).
+
+
+\section{Page Layout: How Records Sit Inside a Page}
+
+Each page has a \textbf{header} with metadata: number of records, free space available, and pointers to other pages (if using the linked list design). The rest of the page holds records.
+
+Two key design dimensions: Is the record size \textbf{fixed or variable}? And do we keep the page \textbf{packed or unpacked}?
+
+\newpage
+\subsection{Fixed-Length Records, Packed}
+
+Records are stored contiguously, one after another, with no gaps.
+
+\begin{figure}[H]
+    \centering    \includegraphics[width=0.5\linewidth]{images/packed_records.png}
+    \caption{Records Packed}
+    \label{fig:placeholder}
+\end{figure}
+
+
+\begin{itemize}
+    \item \textbf{Record ID} = (page ID, slot number). Locating record $i$: offset $= \text{header size} + i \times \text{record size}$. Simple arithmetic.
+    \item \textbf{Insert:} Append at the end of the occupied region.
+    \item \textbf{Delete:} Remove the record, then shift all subsequent records up to fill the gap (\textbf{consolidation}).
+    \item \textbf{Scan:} Read from start to end. No gaps to skip. Very efficient.
+\end{itemize}
+
+\textbf{Trade-off:} Scans are fast (no holes), but deletions are expensive (must shift records to stay packed). Good when full scans are common and deletions are rare.
+
+\subsection{Fixed-Length Records, Unpacked (Bitmap)}
+
+Records occupy fixed slots, but gaps are allowed.
+
+\begin{figure}[H]
+    \centering    \includegraphics[width=0.5\linewidth]{images/unpacked_records.png}
+    \caption{Records Unpacked}
+    \label{fig:placeholder}
+\end{figure}
+
+
+\begin{itemize}
+    \item A \textbf{bitmap} in the page header tracks which slots are occupied (1) and which are empty (0).
+    \item \textbf{Record ID} = (page ID, slot number). Locating a record still uses arithmetic, but we check the bitmap first.
+    \item \textbf{Insert:} Find an empty slot via the bitmap, write the record, flip the bit.
+    \item \textbf{Delete:} Flip the bit to 0. No consolidation needed.
+    \item \textbf{Scan:} Must consult the bitmap to skip empty slots. Gaps may also cause non-sequential disk reads within the page.
+\end{itemize}
+
+\textbf{Trade-off:} Deletions are cheap (just flip a bit), but scans are slightly more complex and may encounter holes. Good when deletions are frequent and full scans are less critical.
+
+\subsection{The Core Trade-off: Pack Now or Pay Later}
+
+\begin{itemize}
+    \item \textbf{Packed:} Pay at deletion time (consolidation) to keep things tidy. Scans are fast later.
+    \item \textbf{Unpacked:} Pay at scan time (skipping holes, checking bitmaps). Deletions are fast now.
+\end{itemize}
+
+The right choice depends on whether 
+there are frequent scans or frequent insertions and deletions.
+
+
+
+\end{document}
