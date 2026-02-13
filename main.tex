@@ -6,6 +6,8 @@
 \usepackage{enumitem}
 \usepackage{float}
 \usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning}
 
 \title{Disk and File Structures --- Lecture Notes}
 \author{CS186 - Database Systems}
@@ -286,5 +288,177 @@ The optimal choice depends on the workload:
 \end{itemize}
 
 Neither structure excels at both. This limitation motivates the need for \textbf{indexes}, which aim to provide fast searches without expensive insertions and deletions.
+
+\section{Motivation for Indexes}
+
+From the previous lecture, we saw the fundamental trade-off between heap files and sorted files:
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} \\
+        \midrule
+        Equality Search & $0.5 \cdot B \cdot D$ & $(\log_2 B) \cdot D$ \\
+        Insert & $2 \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{The core trade-off}
+    \label{tab:tradeoff}
+\end{table}
+
+\begin{itemize}
+    \item \textbf{Heap files:} Fast inserts (just append), slow searches (must scan).
+    \item \textbf{Sorted files:} Fast searches (binary search), slow inserts (must shift records to maintain order).
+\end{itemize}
+
+\textbf{Goal:} Can we achieve fast searches \textit{without} expensive inserts? This motivates the need for indexes.
+
+\subsection{What Is an Index?}
+
+An index is a data structure that allows us to look up records using a \textbf{search key}, similar to the index at the back of a book.
+
+\begin{itemize}
+    \item The search key does not have to be the primary key.
+    \item Can be built on any column(s) we frequently query.
+    \item Can be non-unique (multiple records may share the same key).
+\end{itemize}
+
+\textbf{Example:} If queries frequently search by \texttt{student\_id}, build an index on that column. If queries search by \texttt{major}, build an index on \texttt{major} instead.
+
+
+\section{Building Toward B+ Trees}
+
+\subsection{First Idea: Sorted File with Holes}
+
+Start with a heap file, sort it, but leave empty slots in each page.
+
+\textbf{Why leave holes?}
+\begin{itemize}
+    \item Insertions and deletions no longer require shifting all records.
+    \item New records can fill existing holes.
+\end{itemize}
+
+\textbf{Trade-off:} More pages are needed to store the same amount of data, since each page is partially empty.
+
+\textbf{Remaining problem:} Binary search still has a fanout of 2 (we can only go left or right at each step). Can we do better?
+
+\subsection{Second Idea: Separate Keys from Data}
+
+Split storage into two types of pages:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/key_datapage.png}
+    \caption{Data pages store full records (tuples), while key lookup pages store only the indexed column value and a pointer to the record's location.}
+    \label{fig:placeholder}
+\end{figure}
+
+\textbf{Why this helps:}
+\begin{itemize}
+    \item Keys are smaller than full tuples (one column vs.\ many columns).
+    \item More keys fit per page $\rightarrow$ fewer pages to search through.
+    \item Data pages no longer need to be sorted. The key pages handle navigation.
+\end{itemize}
+
+\textbf{What a key page entry stores:}
+\begin{enumerate}
+    \item The key value (e.g., \texttt{major} or \texttt{nameLast}).
+    \item A pointer to where the record lives (page ID, slot ID).
+\end{enumerate}
+
+This is analogous to a book index. At the back of a textbook, you might find:
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{Topic} & \textbf{Page} \\
+        \midrule
+        B+ trees & 142\\
+        Binary search & 58 \\
+        Hash tables & 97 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{itemize}
+    \item \textbf{Key:} The topic name (``B+ trees'')
+    \item \textbf{Pointers:} The page numbers (142)
+\end{itemize}
+
+You don't store the entire explanation of B+ trees in the index but rather just enough to tell you where to find it. Database indexes work the same way.
+
+\subsection{Third Idea: Build a Tree on Top of Keys}
+
+Instead of binary search on key pages, build a tree structure with \textbf{high fanout}.
+
+\begin{itemize}
+    \item \textbf{Binary tree:} Fanout of 2 (go left or right).
+    \item \textbf{B+ tree:} Fanout of hundreds or thousands (many children per node).
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{images/B+_tree.png}
+    \caption{B+ Tree Structure}
+    \label{fig:bplustree}
+\end{figure}
+
+\subsubsection*{Sorting Property}
+
+Keys within each node are \textbf{sorted}. When searching for a key, you compare your search value against the keys to decide which pointer to follow.
+
+\textbf{Example:} Searching for 27 in an interior node with keys [5 $|$ 13 $|$ 24]:
+\begin{itemize}
+    \item Values $\leq 5$: follow leftmost pointer
+    \item Values $> 5$ and $\leq 13$: follow second pointer
+    \item Values $> 13$ and $\leq 24$: follow third pointer
+    \item Values $> 24$: follow rightmost pointer
+\end{itemize}
+
+Since $27 > 24$, we follow the rightmost pointer. This process repeats at each level until we reach a leaf.
+
+\subsubsection*{Properties of B+ Trees}
+
+\begin{itemize}
+    \item \textbf{Balanced:} All leaf nodes are at the same depth, guaranteeing consistent search performance.
+    \item \textbf{High fanout:} Each node contains many keys and pointers, reducing the number of levels needed.
+    \item \textbf{Data at leaves only:} Interior nodes store keys and pointers to child pages; only leaf nodes store pointers to actual records.
+    \item \textbf{Linked leaves:} Leaf pages are doubly linked, enabling efficient range scans (find keys $>= 27$) without traversing back up the tree.
+    \item \textbf{Occupancy invariant:} Every node (except the root) must be at least half full. This helps the tree maintain a high fanout, and prevents itfewer page reads from degenerating into a binary tree.
+\end{itemize}
+
+\subsubsection*{Why High Fanout Matters}
+
+With a binary tree (fanout 2), searching 1 million records requires $\log_2(1{,}000{,}000) \approx 20$ levels.
+
+With a B+ tree (fanout 2,000), the same search requires $\log_{2000}(1{,}000{,}000) \approx 2$ levels.
+
+Fewer levels means fewer page reads (each level is one page read), which means faster searches.
+
+\textbf{Why high fanout matters:}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Tree Type} & \textbf{Fanout} & \textbf{Height for 4 million records} \\
+        \midrule
+        Binary tree & 2 & $\approx 22$ levels \\
+        B+ tree & 2,000 & 2 levels \\
+        \bottomrule
+    \end{tabular}
+    \caption{Impact of fanout on tree height}
+    \label{tab:fanout}
+\end{table}
+
+Reading is expensive because load it from the disk into memory. Everything we treat in memory we treat as free.
+
+\textbf{Note:} We don't load all keys onto one page and do binary search because page size is fixed by the hardware. We can't create one giant page containing all the keys, and for large datasets (millions or billions of records), the keys wouldn't fit anyway.
+
+\textbf{Note:} Disk I/O (reading/writing) is expensive because data must be transferred from disk into memory. Computation performed entirely in memory is treated as free.
+
+-talk about insert and remove-
 
 \end{document}
