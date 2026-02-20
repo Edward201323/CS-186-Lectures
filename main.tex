@@ -550,7 +550,7 @@ However, sometimes when we delete a key, it causes a node to have fewer than the
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.5\linewidth]{images/underflowDeleteex1.png}
-    \caption{Caption}
+    \caption{Deleting key 16 causes the leaf node to underflow, leaving it with fewer than the minimum number of keys.}
     \label{fig:placeholder}
 \end{figure}
 
@@ -560,7 +560,7 @@ When borrowing from the right sibling when it has more than the minimum number o
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.5\linewidth]{images/underflowDeleteex2.png}
-    \caption{Caption}
+    \caption{The underflowing node borrows from its right sibling: key 21 becomes the new separator in the parent, and the old separator moves down to restore the minimum occupancy.}
     \label{fig:placeholder}
 \end{figure}
 
@@ -573,7 +573,7 @@ If neither sibling can spare a key (both are at minimum occupancy), we must \tex
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.5\linewidth]{images/merge1.png}
-    \caption{Caption}
+    \caption{Neither sibling can spare a key, so the underflowing node and its sibling are selected for merging, along with the separator key from the parent.}
     \label{fig:placeholder}
 \end{figure}
 
@@ -582,7 +582,7 @@ We do this by combining the node where a key was deleted, a sibling node, and th
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.5\linewidth]{images/merge2.png}
-    \caption{Caption}
+    \caption{The nodes are merged into a single node containing keys 18, 20, 21, and 24, and the separator is removed from the parent.}
     \label{fig:placeholder}
 \end{figure}
 
@@ -600,6 +600,13 @@ This is the only way the tree's height decreases, maintaining the property that 
 
 When the key to be deleted is in an interior node (acting as a separator), we need a replacement separator.
 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/interior1.png}
+    \caption{Key 28 is deleted from an interior node, leaving a gap that requires choosing a replacement separator from one of its subtrees.}
+    \label{fig:placeholder}
+\end{figure}
+
 A valid replacement must be:
 \begin{itemize}
     \item Greater than all keys in the left subtree, and
@@ -608,7 +615,189 @@ A valid replacement must be:
 
 So we must choose either the \textbf{largest key in the left subtree} or the \textbf{smallest key in the right subtree.} We replace the deleted key with the chosen candidate, then delete the candidate from its original leaf node. 
 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/interior2.png}
+    \caption{The separator is replaced using the smallest key in the right subtree.}
+    \label{fig:placeholder}
+\end{figure}
+
 This may trigger underflow handling in that leaf, but we just fix it buy borrowing a key from a sibling or merging with a sibling.
+
+\section{Ways to Organize Leaf Pages}
+
+B+ tree leaf pages can be organized in different ways depending on how they connect to the actual data. This choice affects lookup speed, storage requirements, and how many indexes you can create.
+
+We want multiple B+ trees because a single B+ tree can only speed up queries on the column(s) it's indexed on. For example, if you have a B+ tree on \texttt{player\_id}, a query like \texttt{WHERE name = 'Joe'} can't be used. You'd need a separate B+ tree on \texttt{name}. Since we often want multiple indexes (B+ trees) per table, the way we organize leaf pages matters.
+
+
+\subsection{Alternative 1: Storing By Value}
+\begin{itemize}
+    \item Store the actual tuples directly in the leaf pages
+    \item One fewer pointer to follow allowing faster lookups
+    \item Leaves become much larger since they hold full tuples, not just pointers
+    \item You can only have ONE such index (B+ Tree) per table. If you want a second index, you have to duplicate your data.
+\end{itemize}
+
+\subsection{Alternative 2: By Reference}
+\begin{itemize}
+    \item Leaf pages store pointers (page number + record ID) to tuples
+    \item This is the standard approach we've been using
+    \item Allows multiple indexes on the same table  (each index just stores pointers to the same data)
+\end{itemize}
+
+\subsection{Alternative 3: List of References}
+\begin{itemize}
+    \item Like Alternative 2, but stores a \textit{list} of pointers per key
+    \item Useful when multiple records share the same key (e.g., many players named ``Joe'')
+    \item To find a specific record among duplicates, you have to follow each pointer and check one by one
+\end{itemize}
+
+\section{Clustered vs Unclustered Indexes}
+
+Clustering refers to whether the data pages themselves are sorted by the index key. This affects how efficiently we can read data, especially for range queries.
+
+\subsection{Clustered Index}
+\begin{itemize}
+    \item The data pages are \textbf{sorted} by the index key (essentially a sorted file with a B+ tree on top)
+    \item Pointers from leaf pages go in parallel, no criss-crossing
+    \item \textbf{Pro:} Range queries are fast \texttt{(e.g., WHERE birth\_year > 1970}). Find the starting point and read sequentially 
+    \item \textbf{Pro:} Nearby keys are stored on nearby (or the same) pages
+    \item \textbf{Con:} Harder to maintain, as Insertions may require shuffling data to keep things sorted
+    \item In practice, pages are kept about $\frac{2}{3}$ full to leave room for future inserts
+\end{itemize}
+
+\subsection{Unclustered Index}
+\begin{itemize}
+    \item The data pages are a \textbf{heap} (unsorted)---the B+ tree is built on top of unordered data
+    \item Pointers from leaf pages go everywhere
+    \item \textbf{Pro:} Easier to maintain. Inserts just go wherever there's space
+    \item \textbf{Con:} Range queries are slow. You may have to jump to many different pages
+\end{itemize}
+
+\subsection{Why Only One Clustered Index Per Table?}
+
+You can only sort your data \textbf{one way}. Think of it like arranging chairs in a room. You can sort them by age or by color, but not both at the same time unless you duplicate them.
+
+Since a clustered index requires the data pages to be sorted by that index's key, you can only have \textbf{one clustered index per table}. Any additional indexes must be unclustered (they just point to wherever the data happens to be).
+
+\subsection{Sequential vs Random I/O}
+
+This matters because of how disks work:
+\begin{itemize}
+    \item \textbf{Sequential reads} (clustered): Reading consecutive pages is fast; up to 100$\times$ faster on spinning disks
+    \item \textbf{Random reads} (unclustered): Jumping around to different pages is slow, as the disk arm has to move each time
+\end{itemize}
+
+For SSDs, this difference is smaller, but sequential reads are still faster.
+
+\section{Using B+ Trees for Queries}
+
+When you create a composite index on multiple columns, the order matters. The data is sorted by the first column, then by the second column as a tiebreaker, and so on.
+
+Suppose we have a B+ tree index on \texttt{(birth\_year, weight)}. Which queries can use the index?
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcp{7cm}}
+        \toprule
+        \textbf{Query} & \textbf{Can use index?} & \textbf{Why?} \\
+        \midrule
+        \texttt{birth\_year = 1970} & Yes & Directly matches the first indexed column \\
+        \texttt{weight > 200} & No & Weight is only the tiebreaker. \\
+        \texttt{birth\_year = 1970 AND weight > 200} & Yes & Find all 1970 records, then filter by weight (which is sorted within that group) \\
+        \texttt{birth\_year > 1970} & Yes & Find the first 1970 record, then read everything to the right \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The first column in a composite index \texttt{(birth\_year, weight)} has more significance. You can only use the index efficiently if your query includes the first column. Queries on just the second column can't use the index.
+
+\section{I/O Cost Analysis}
+
+We want to compare B+ trees against heap files and sorted files. Remember: we count I/O operations (page reads/writes), not Big-O complexity. Constant factors matter in databases.
+
+\subsection{Key Variables}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{cl}
+        \toprule
+        \textbf{Variable} & \textbf{Meaning} \\
+        \midrule
+        $B$ & Number of data pages (if fully packed) \\
+        $D$ & Time to read/write one page \\
+        $R$ & Records per page \\
+        $F$ & Fanout (typically $\approx 2000$, \textbf{not} 2) \\
+        $E$ & Entries per leaf page \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Why Fanout Matters}
+
+Both sorted files and B+ trees have logarithmic lookup time, but:
+\begin{itemize}
+    \item Sorted file (binary search): $\log_2(n)$
+    \item B+ tree: $\log_F(n)$ where $F \approx 2000$
+\end{itemize}
+
+$\log_{2000}(n)$ is \textbf{much smaller} than $\log_2(n)$. For 1 million records:
+\begin{itemize}
+    \item Binary search: $\log_2(1{,}000{,}000) \approx 20$ page reads
+    \item B+ tree: $\log_{2000}(1{,}000{,}000) \approx 2$ page reads
+\end{itemize}
+
+This is why B+ trees beat sorted files---same Big-O, but the constant factor is huge.
+
+\subsection{Cost Formulas}
+
+\textbf{Scan all records:}
+\[
+\text{Cost} = 1.5 \cdot B \cdot D
+\]
+The $1.5$ factor comes from pages being $\frac{2}{3}$ full (we leave room for inserts). We don't need the index for this---just read all data pages.
+
+\textbf{Equality search:}
+\[
+\text{Cost} = \left( \log_F \left( \frac{B \cdot R}{E} \right) + 2 \right) \cdot D
+\]
+\begin{itemize}
+    \item $\log_F(\ldots)$: traverse the tree from root to leaf
+    \item $+1$: accounts for reading the root
+    \item $+1$: fetch the actual data page (following the pointer)
+\end{itemize}
+
+\textbf{Range search:}
+\[
+\text{Cost} = \left( \log_F \left( \frac{B \cdot R}{E} \right) + \text{num\_pages} \right) \cdot D
+\]
+Find the starting point, then read all matching pages. In a clustered index, these pages are sequential.
+
+\subsection{Cost Comparison}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} & \textbf{B+ Tree (Clustered)} \\
+        \midrule
+        Scan & $B$ & $B$ & $1.5B$ \\
+        Equality Search & $0.5B$ & $\log_2 B$ & $\log_F B$ \\
+        Range Search & $B$ & $\log_2 B + \text{pages}$ & $\log_F B + \text{pages}$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{I/O cost comparison (in page reads, $D$ omitted)}
+\end{table}
+
+\subsection{Key Takeaways}
+
+\begin{itemize}
+    \item \textbf{Constant factors matter}: $\log_F$ vs $\log_2$ makes a big difference when $F \approx 2000$
+    \item \textbf{Sequential I/O $\gg$ Random I/O}: on spinning disks, sequential reads are $\sim$100$\times$ faster
+    \item \textbf{Clustered indexes} allow sequential reads for range queries; unclustered indexes require random reads
+    \item The $1.5\times$ scan cost comes from leaving pages $\frac{2}{3}$ full for future inserts
+\end{itemize}
 
 
 \end{document}
