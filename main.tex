@@ -327,7 +327,7 @@ An index is a data structure that allows us to look up records using a \textbf{s
 \textbf{Example:} If queries frequently search by \texttt{student\_id}, build an index on that column. If queries search by \texttt{major}, build an index on \texttt{major} instead.
 
 
-\section{Building Toward B+ Trees}
+\section{B+ Trees}
 
 \subsection{First Idea: Sorted File with Holes}
 
@@ -422,11 +422,11 @@ Since $27 > 24$, we follow the rightmost pointer. This process repeats at each l
 \subsubsection*{Properties of B+ Trees}
 
 \begin{itemize}
-    \item \textbf{Balanced:} All leaf nodes are at the same depth, guaranteeing consistent search performance.
+    \item \textbf{Balanced:} All leaf nodes are at the same depth/level, guaranteeing consistent search performance.
     \item \textbf{High fanout:} Each node contains many keys and pointers, reducing the number of levels needed.
     \item \textbf{Data at leaves only:} Interior nodes store keys and pointers to child pages; only leaf nodes store pointers to actual records.
     \item \textbf{Linked leaves:} Leaf pages are doubly linked, enabling efficient range scans (find keys $>= 27$) without traversing back up the tree.
-    \item \textbf{Occupancy invariant:} Every node (except the root) must be at least half full. This helps the tree maintain a high fanout, and prevents itfewer page reads from degenerating into a binary tree.
+    \item \textbf{Occupancy invariant:} Every node (except the root) must be at least half full. This helps the tree maintain a high fanout, and prevents it from degenerating into a binary tree.
 \end{itemize}
 
 \subsubsection*{Why High Fanout Matters}
@@ -453,12 +453,162 @@ Fewer levels means fewer page reads (each level is one page read), which means f
     \label{tab:fanout}
 \end{table}
 
-Reading is expensive because load it from the disk into memory. Everything we treat in memory we treat as free.
+Disk reads are expensive because data must be loaded from disk into memory. Once data is in memory, we treat computation on it as free.
 
 \textbf{Note:} We don't load all keys onto one page and do binary search because page size is fixed by the hardware. We can't create one giant page containing all the keys, and for large datasets (millions or billions of records), the keys wouldn't fit anyway.
 
 \textbf{Note:} Disk I/O (reading/writing) is expensive because data must be transferred from disk into memory. Computation performed entirely in memory is treated as free.
 
--talk about insert and remove -
+\subsection{B+ Tree Insertion}
+
+Insertion in a B+ tree always begins at the leaf level. When inserting a key into a B+ tree:
+\begin{itemize}
+    \item We search down the tree to find the correct leaf node.
+    \item Insert the key in sorted order.
+    \item If the leaf has room, we are done.
+\end{itemize}
+Most insertions are straightforward. We simply find the appropriate leaf and place the key in its sorted position. The tree structure only changes when a node overflows.
+
+\textbf{Splitting a Leaf Node when it overflows:}
+
+Each node has a maximum capacity. When a node becomes full and we attempt to insert another key, the node \textbf{overflows} and must be \textbf{split}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/leafInsertionex1.png}
+    \caption{61 was attempted to be inserted, but the node was already at its maximum size of 4.}
+    \label{fig:placeholder}
+\end{figure}
+
+Divide the keys: the smaller half go into the left node, the larger half go into the right node.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/leafInsertionex2.png}
+    \caption{61 was attempted to be inserted, but the node was already at its maximum capacity, triggering a split due to the max node size.}
+    \label{fig:placeholder}
+\end{figure}
+
+Next, we copy up the middle key (smallest key of the right node or largest in the left node) into the parent as a separator.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/leafInsertionex3.png}
+    \caption{The middle key, 73, is copied up into the parent node to act as a separator between the left node (61, 67) and the right node (79, 97).}
+    \label{fig:placeholder}
+\end{figure}
+
+The parent now points to both the left and right nodes, with the copied-up key acting as a \textbf{separator}, where all keys in the left subtree are less than or equal to it, and all keys in the right subtree are greater than it.
+
+\textbf{Splitting an Interior Node:}
+ 
+Divide the keys: the smallest half go into the left node, the largest half go into the right node.
+
+\begin{figure}[H]
+    \centering    \includegraphics[width=0.5\linewidth]{images/interiorInsertionex1.png}
+    \caption{The full interior node is split: keys are divided so that 17 and 23 move into the left node, while 31 and 37 move into the right node.}
+    \label{fig:placeholder}
+\end{figure}
+
+Redistribute the child pointers appropriately between the two new nodes.
+
+\textbf{Push up} the middle key into the parent. If the parent is already full, it will overflow, and we repeat the splitting process on the parent with recursion.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/interiorInsertionex2.png}
+    \caption{Child pointers are redistributed to match the split, and the middle key, 43, is copied upward from the original node.}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/interiorInsertionex3.png}
+    \caption{The middle key, 43, becomes the new parent node, with the left child containing keys 11 and 29 and the right child containing keys 67 and 89, completing the recursive split.}
+    \label{fig:placeholder}
+\end{figure}
+
+Splitting is a \textbf{recursive} process. When we split a node and push a key into the parent, the parent may itself overflow. If so, we repeat the splitting process on the parent.
+
+\textbf{Example:} Suppose we insert a key into a full leaf. We split the leaf and push a key into the parent. But the parent was already full, so it now overflows. We split the parent into two nodes and push a key into the grandparent. This process continues up the tree as needed.
+
+\textbf{The tree node grows taller only when the root splits.} In this case:
+\begin{itemize}
+    \item Split the root into two nodes.
+    \item Create a new root node containing the pushed-up middle key.
+    \item The new root points to the two nodes created from the old root.
+\end{itemize}
+
+This ensures the tree remains \textbf{balanced}, where all leaves stay at the same depth. The tree grows from the root upward, not from the leaves downward.
+
+\subsection{B+ Tree Deletion}
+
+To delete a key, we search for it using the standard search algorithm, remove it from its node, and if the node still has at least the minimum number of keys, we are done.
+
+However, sometimes when we delete a key, it causes a node to have fewer than the minimum number of keys. When this happens, we borrow a key from a node next to it/sibling.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/underflowDeleteex1.png}
+    \caption{Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+
+When borrowing from the right sibling when it has more than the minimum number of keys, we take the smallest key from the right sibling, which becomes the new separator in the parent. The old separator from the parent moves down to fill the gap in the underflowing node.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/underflowDeleteex2.png}
+    \caption{Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+If we instead borrow from the left sibling, we take the largest key from the left sibling, which becomes the new separator in the parent.
+
+\textbf{Important:} We cannot simply move a key directly from sibling to sibling. The separator key in the parent must be updated to maintain the B+ tree property (all keys to the left of a separator are smaller; all keys to the right are larger).
+
+If neither sibling can spare a key (both are at minimum occupancy), we must \textbf{merge} nodes. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/merge1.png}
+    \caption{Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+We do this by combining the node where a key was deleted, a sibling node, and the separator between them, and merging them into a single full node.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/merge2.png}
+    \caption{Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+After merging, the parent may itself underflow. If so, we recursively apply the same strategy: first try to borrow from a sibling, and if that fails, merge with a sibling.
+
+The tree becomes shorter when a merge propagates all the way to the root and the root ends up with no keys. In this case:
+\begin{itemize}
+    \item The root is deleted.
+    \item The single remaining child of the old root becomes the new root.
+\end{itemize}
+
+This is the only way the tree's height decreases, maintaining the property that all leaves are at the same level.
+
+\textbf{Deleting from Interior Nodes.}
+
+When the key to be deleted is in an interior node (acting as a separator), we need a replacement separator.
+
+A valid replacement must be:
+\begin{itemize}
+    \item Greater than all keys in the left subtree, and
+    \item Smaller than all keys in the right subtree.
+\end{itemize}
+
+So we must choose either the \textbf{largest key in the left subtree} or the \textbf{smallest key in the right subtree.} We replace the deleted key with the chosen candidate, then delete the candidate from its original leaf node. 
+
+This may trigger underflow handling in that leaf, but we just fix it buy borrowing a key from a sibling or merging with a sibling.
+
 
 \end{document}
