@@ -1,0 +1,200 @@
+\section{Buffer Management}
+
+The buffer manager is the layer between disk storage and higher-level database components (indexes, query execution). It provides the abstraction that allows queries to operate as if all data is in memory, even when the database far exceeds available RAM.
+
+\subsection{Why We Need a Buffer Manager}
+
+The buffer manager solves two fundamental problems:
+
+\textbf{Abstraction.} Higher-level database code (B-tree indexes, query executors) should not need to know whether data lives on an SSD, spinning disk, or any other storage medium. The buffer manager handles these details, providing a uniform interface.
+
+\textbf{Memory limitations.} Databases are often larger than available RAM. Since data must be in memory to be processed, the buffer manager creates the \textit{illusion} that the entire database fits in memory by intelligently loading pages when needed and evicting them when not.
+
+\subsection{Buffer Pool Organization}
+
+The buffer manager maintains a region of memory called the \textbf{buffer pool}, organized into fixed-size \textbf{frames} (slots in memory that are the same size). Each frame can hold exactly one disk page.
+
+\begin{figure}[h]
+\centering
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Frame ID} & \textbf{Page ID} & \textbf{Dirty} & \textbf{Pin Count} \\
+\hline
+1 & 1 & 0 & 0 \\
+2 & 5 & 1 & 2 \\
+3 & 12 & 0 & 1 \\
+4 & 7 & 1 & 0 \\
+\hline
+\end{tabular}
+\caption{Buffer pool metadata table}
+\end{figure}
+
+Each frame tracks the following metadata:
+\begin{itemize}
+    \item \textbf{Page ID}: Which disk page currently occupies this frame.
+    \item \textbf{Dirty bit}: Has the page been modified since it was loaded? If yes, it must be written back to disk before eviction.
+    \item \textbf{Pin count}: How many queries are currently using this page? Pinned pages (pin count $> 0$) cannot be evicted.
+\end{itemize}
+
+A hash table maps page IDs to frame IDs for fast lookup when checking if a page is resident in memory.
+
+\subsection{Buffer Manager Operations}
+
+\subsubsection*{Reading a Page}
+
+When a page is requested:
+\begin{enumerate}
+    \item Check the hash table to see if the page is already in the buffer pool.
+    \item If \textbf{present} (cache hit): return the memory address of the frame.
+    \item If \textbf{not present} (cache miss):
+    \begin{enumerate}
+        \item Find a free frame, or choose an unpinned frame for eviction.
+        \item If the chosen frame is dirty, write it back to disk first.
+        \item Read the requested page from disk into the frame.
+        \item Update the hash table and metadata.
+        \item Pin the page and return its memory address.
+    \end{enumerate}
+\end{enumerate}
+
+\subsubsection*{Writing a Page}
+
+Updates happen in memory. The buffer manager sets the dirty bit but does not immediately write to disk. Dirty pages are written back:
+\begin{itemize}
+    \item When the page is evicted to make room for another page.
+    \item Periodically by a background process.
+    \item When explicitly requested (e.g., during checkpointing).
+\end{itemize}
+
+\textbf{Note:} Correctness is ensured by the recovery subsystem (covered in later lectures), not by the buffer manager itself. The buffer manager trusts that higher-level protocols handle crash recovery.
+
+\subsection{Page Replacement Policies}
+
+When the buffer pool is full and a new page is needed, an unpinned page must be evicted. The choice of \textit{which} page to evict significantly affects performance.
+
+A good replacement policy must be:
+\begin{itemize}
+    \item \textbf{Correct}: Never evict dirty pages without writing them back; never evict pinned pages.
+    \item \textbf{Accurate}: Evict pages unlikely to be needed again soon.
+    \item \textbf{Low overhead}: Minimal metadata storage and computation per access.
+\end{itemize}
+
+\subsubsection*{Least Recently Used (LRU)}
+
+\textbf{Idea:} Evict the page that has not been used for the longest time.
+
+\textbf{Implementation:} Track the last-access time for each frame. When eviction is needed, find the unpinned frame with the oldest timestamp.
+
+\textbf{Advantages:}
+\begin{itemize}
+    \item Works well for workloads with temporal locality (popular pages accessed repeatedly).
+    \item Effective for B-tree traversals where upper levels are frequently accessed.
+\end{itemize}
+
+\textbf{Disadvantages:}
+\begin{itemize}
+    \item Expensive to find the minimum timestamp among unpinned frames.
+    \item Requires storing a timestamp (or counter) per frame.
+    \item Performs poorly on sequential scans (see Section 10.4.3).
+\end{itemize}
+
+\subsubsection*{Clock Policy (LRU Approximation)}
+
+The clock policy approximates LRU with much lower overhead by using a single \textbf{reference bit} per frame instead of timestamps.
+
+\textbf{Algorithm:}
+\begin{enumerate}
+    \item Arrange frames conceptually in a circle with a ``clock hand'' pointer.
+    \item When eviction is needed, examine the frame at the clock hand:
+    \begin{itemize}
+        \item If the frame is \textbf{pinned}: advance the hand and continue.
+        \item If the reference bit is \textbf{set}: clear the bit, advance the hand, continue.
+        \item If the reference bit is \textbf{unset}: evict this page.
+    \end{itemize}
+    \item When a page is accessed, set its reference bit to 1.
+\end{enumerate}
+
+\textbf{Intuition:} A page whose reference bit remains unset through a full rotation of the clock hand has not been used recently and is a good eviction candidate.
+
+\subsubsection*{The Sequential Scan Problem}
+
+LRU performs terribly on repeated sequential scans when the data exceeds the buffer pool size.
+
+\textbf{Example:} Buffer pool has 6 frames; table has 7 pages.
+\begin{itemize}
+    \item First scan: Load pages 1--6. Page 7 evicts page 1 (LRU).
+    \item Second scan: Need page 1, but it was just evicted. Load page 1, evicting page 2.
+    \item Continue: Every access is a miss because we always evict the next page we need.
+\end{itemize}
+
+This is called \textbf{sequential flooding}---the buffer pool is constantly churning with no cache hits.
+
+\subsubsection*{Most Recently Used (MRU)}
+
+\textbf{Idea:} For sequential scans, the page just accessed is the one we are \textit{least} likely to need again (until the scan restarts). Evict the most recently used page instead.
+
+\textbf{Example (same setup):}
+\begin{itemize}
+    \item First scan: Load pages 1--6. Page 7 evicts page 6 (MRU).
+    \item Second scan: Pages 1--5 are hits. Page 6 evicts page 5. Page 7 evicts page 6.
+    \item Result: Most accesses are cache hits.
+\end{itemize}
+
+MRU is optimal for sequential scans but performs poorly for workloads with temporal locality.
+
+\subsection{Why Not Use the OS Buffer Cache?}
+
+Operating systems provide their own buffer cache for file I/O. Why do databases implement their own?
+
+\begin{enumerate}
+    \item \textbf{Knowledge of access patterns:} The OS does not know that a query is performing a sequential scan. The database can use this knowledge to prefetch pages or choose MRU over LRU.
+    \item \textbf{Control over write ordering:} Recovery protocols require dirty pages to be flushed in a specific order. The OS cannot guarantee this.
+    \item \textbf{Avoiding page faults:} OS cache misses trigger expensive page faults with context switches. Databases prefer to handle misses in user space.
+    \item \textbf{Prefetching:} The database can prefetch multiple sequential pages in a single I/O, amortizing seek time.
+\end{enumerate}
+
+\subsection{Real-World Implementations}
+
+Different databases use different buffer management strategies:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Database} & \textbf{Strategy} \\
+\hline
+PostgreSQL & Clock policy with usage counter (0--5) \\
+MySQL/InnoDB & Two-queue LRU (new/old sublists) \\
+SQLite & Simple LRU \\
+Oracle & Optimized for concurrency \\
+SQL Server & Page life expectancy prediction \\
+\hline
+\end{tabular}
+\caption{Buffer management strategies in production databases}
+\end{table}
+
+\subsection{I/O Cost Summary}
+
+The buffer manager's effectiveness is measured by cache hit rate, which directly impacts the number of disk I/Os:
+
+\begin{itemize}
+    \item \textbf{Cache hit:} Page already in buffer pool. Cost: 0 disk I/Os.
+    \item \textbf{Cache miss (clean eviction):} Must read page from disk. Cost: 1 disk I/O.
+    \item \textbf{Cache miss (dirty eviction):} Must write evicted page, then read new page. Cost: 2 disk I/Os.
+\end{itemize}
+
+The choice of replacement policy can dramatically affect hit rates depending on the workload:
+\begin{itemize}
+    \item \textbf{LRU/Clock:} Good for point queries on popular keys, B-tree traversals.
+    \item \textbf{MRU:} Good for repeated sequential scans.
+    \item \textbf{Hybrid policies:} Real systems often combine approaches to handle mixed workloads.
+\end{itemize}
+
+\subsection{Key Takeaways}
+
+\begin{itemize}
+    \item The buffer manager provides the illusion that all data is in memory.
+    \item I/O is the most expensive operation; minimizing disk access is critical.
+    \item Metadata per frame: page ID, dirty bit, pin count.
+    \item No single eviction policy works best for all workloads---real systems use hybrids.
+    \item Databases manage their own buffer pool rather than relying on the OS for better control and performance.
+\end{itemize}
