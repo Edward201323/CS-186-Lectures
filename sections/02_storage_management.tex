@@ -1,0 +1,13 @@
+\section{Storage Management}
+
+A key design decision: \textbf{the data base management system does not rely on the OS file system for page management.}
+
+The OS treats the DBMS as just another application. It doesn't know the query workload, so it can't make smart decisions like prefetching pages for a \texttt{SELECT *} scan. Instead, the DBMS asks the OS for one large file and manages pages within it internally. This lets the DBMS:
+
+\begin{itemize}
+    \item Control which pages are read and when.
+    \item Prefetch pages when the query makes future reads predictable (e.g., a full table scan on a table spanning 10 blocks means we know we need all 10).
+    \item Exploit knowledge of access patterns---for example, if a concert ticket table is being hit heavily, prefetch its blocks in advance.
+\end{itemize}
+
+For this course, assume \textbf{one file per relation} on a single disk.

@@ -1,0 +1,104 @@
+\section{Page Layout}
+
+Each page has a \textbf{header} with metadata: number of records, free space available, and pointers to other pages (if using the linked list design). The rest of the page holds records.
+
+Two key design dimensions: Is the record size \textbf{fixed or variable}? And do we keep the page \textbf{packed or unpacked}?
+
+\newpage
+\subsection{Fixed-Length Records, Packed}
+
+Records are stored contiguously, one after another, with no gaps.
+
+\begin{figure}[H]
+    \centering    \includegraphics[width=0.5\linewidth]{images/packed_records.png}
+    \caption{Records Packed}
+    \label{fig:placeholder}
+\end{figure}
+
+
+\begin{itemize}
+    \item \textbf{Record ID} = (page ID, slot number). Locating record $i$: offset $= \text{header size} + i \times \text{record size}$. Simple arithmetic.
+    \item \textbf{Insert:} Append at the end of the occupied region.
+    \item \textbf{Delete:} Remove the record, then shift all subsequent records up to fill the gap (\textbf{consolidation}).
+    \item \textbf{Scan:} Read from start to end. No gaps to skip. Very efficient.
+\end{itemize}
+
+\textbf{Trade-off:} Scans are fast (no holes), but deletions are expensive (must shift records to stay packed). Good when full scans are common and deletions are rare.
+
+\subsection{Fixed-Length Records, Unpacked (Bitmap)}
+
+Records occupy fixed slots, but gaps are allowed.
+
+\begin{figure}[H]
+    \centering    \includegraphics[width=0.5\linewidth]{images/unpacked_records.png}
+    \caption{Records Unpacked}
+    \label{fig:placeholder}
+\end{figure}
+
+
+\begin{itemize}
+    \item A \textbf{bitmap} in the page header tracks which slots are occupied (1) and which are empty (0).
+    \item \textbf{Record ID} = (page ID, slot number). Locating a record still uses arithmetic, but we check the bitmap first.
+    \item \textbf{Insert:} Find an empty slot via the bitmap, write the record, flip the bit.
+    \item \textbf{Delete:} Flip the bit to 0. No consolidation needed.
+    \item \textbf{Scan:} Must consult the bitmap to skip empty slots. Gaps may also cause non-sequential disk reads within the page.
+\end{itemize}
+
+\textbf{Trade-off:} Deletions are cheap (just flip a bit), but scans are slightly more complex and may encounter holes. Good when deletions are frequent and full scans are less critical.
+
+\subsection{The Core Trade-off: Pack Now or Pay Later}
+
+\begin{itemize}
+    \item \textbf{Packed:} Pay at deletion time (consolidation) to keep things tidy. Scans are fast later.
+    \item \textbf{Unpacked:} Pay at scan time (skipping holes, checking bitmaps). Deletions are fast now.
+\end{itemize}
+
+The right choice depends on whether 
+there are frequent scans or frequent insertions and deletions.
+
+\subsection{Variable-Length Records: Slotted Page}
+
+When records have variable lengths, we cannot use simple arithmetic to locate records. Instead, we use a \textbf{slotted page} design.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.6\linewidth]{images/slotted_page.png}
+    \caption{Slotted Page Layout}
+    \label{fig:slotted_page}
+\end{figure}
+
+\begin{itemize}
+    \item A \textbf{slot directory} (also called the footer) stores metadata at one end of the page. Each slot entry contains a \textbf{pointer} to a record and optionally its length.
+    \item \textbf{Records} are stored at the opposite end of the page and grow toward the middle.
+    \item \textbf{Free space} sits between the slot directory and the records.
+    \item \textbf{Record ID} = (page ID, slot number). External references use slot numbers, not physical offsets.
+\end{itemize}
+
+\subsubsection*{Why Grow in Opposite Directions?}
+
+Since records are variable-length, we don't know how many will fit on a page. If the slot directory were at the top followed immediately by records, adding a new slot would require shifting all records which is expensive.
+
+By having the slot directory grow upward and records grow downward (or vice versa), we avoid this problem:
+\begin{itemize}
+    \item \textbf{Insert:} Add a new slot entry (grows toward middle), write the record (grows from other end). No shifting required.
+    \item \textbf{Page full:} When the two regions meet, allocate a new page.
+\end{itemize}
+
+\subsubsection*{Operations}
+
+\begin{itemize}
+    \item \textbf{Insert:} Find free space, write the record, add a slot entry pointing to it.
+    \item \textbf{Delete:} Mark the slot as empty. This leaves a hole in the record area.
+    \item \textbf{Compaction:} Periodically, the page can be \textbf{compacted}---records are moved to eliminate holes, and slot pointers are updated. Crucially, \textbf{slot numbers do not change}, so external references (from indexes or other pages) remain valid.
+    \item \textbf{Scan:} Iterate through the slot directory, following each pointer to read records.
+\end{itemize}
+
+\subsubsection*{Trade-offs}
+
+\begin{itemize}
+    \item \textbf{Flexibility:} Handles variable-length records gracefully.
+    \item \textbf{Stable references:} Slot numbers stay constant even when records move during compaction.
+    \item \textbf{Overhead:} Requires storing a pointer (and possibly length) for every record, unlike fixed-length packed pages where position is implicit.
+\end{itemize}
+
+\textbf{Real-world usage:} PostgreSQL and MySQL both use slotted page designs. It is the standard approach for handling variable-length records in modern database systems.

@@ -1,0 +1,36 @@
+\section{Indexes}
+
+From the previous lecture, we saw the fundamental trade-off between heap files and sorted files:
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} \\
+        \midrule
+        Equality Search & $0.5 \cdot B \cdot D$ & $(\log_2 B) \cdot D$ \\
+        Insert & $2 \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{The core trade-off}
+    \label{tab:tradeoff}
+\end{table}
+
+\begin{itemize}
+    \item \textbf{Heap files:} Fast inserts (just append), slow searches (must scan).
+    \item \textbf{Sorted files:} Fast searches (binary search), slow inserts (must shift records to maintain order).
+\end{itemize}
+
+\textbf{Goal:} Can we achieve fast searches \textit{without} expensive inserts? This motivates the need for indexes.
+
+\subsection{What Is an Index?}
+
+An index is a data structure that allows us to look up records using a \textbf{search key}, similar to the index at the back of a book.
+
+\begin{itemize}
+    \item The search key does not have to be the primary key.
+    \item Can be built on any column(s) we frequently query.
+    \item Can be non-unique (multiple records may share the same key).
+\end{itemize}
+
+\textbf{Example:} If queries frequently search by \texttt{student\_id}, build an index on that column. If queries search by \texttt{major}, build an index on \texttt{major} instead.

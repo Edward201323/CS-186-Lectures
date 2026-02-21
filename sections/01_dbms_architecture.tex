@@ -1,0 +1,14 @@
+\section{DBMS Architecture}
+
+A user writes a SQL query, and somehow the right data comes back. In between, the DBMS handles several layers of work:
+
+\begin{enumerate}
+    \item \textbf{Parsing:} Check that the query is valid---tables and columns exist, syntax is correct.
+    \item \textbf{Query planning and optimization:} Find an efficient way to execute the query (covered in later lectures).
+    \item \textbf{Execution:} Run the plan, which ultimately requires reading data from disk.
+    \item \textbf{File and disk management:} Decide which files to open, which pages to read, and how to transfer data between disk and memory.
+\end{enumerate}
+
+Each layer is an \textbf{abstraction} that hides the complexity beneath it. The user sees a flat relation with rows and columns. Underneath, the data may live in heap files, spread across disk pages, organized in packed or slotted layouts---none of which the user needs to know. This is \textbf{physical data independence}.
+
+This lecture focuses on the bottom layers: how the DBMS stores data on disk and organizes it within files and pages.

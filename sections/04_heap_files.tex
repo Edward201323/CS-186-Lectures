@@ -1,0 +1,35 @@
+\section{Heap Files}
+
+A \textbf{heap file} is the simplest file structure: records are stored with no particular ordering. As tuples are inserted or deleted, pages are allocated or freed as needed.
+
+To support basic operations (scan all records, insert, delete, retrieve by record ID), we need to track which pages exist and how much free space each has.
+
+\subsection{Design 1: Linked List}
+
+\begin{figure}[H]
+    \centering  \includegraphics[width=0.8\textwidth]{images/heap_linkedlist.png}
+    \caption{Heap file organized as a doubly linked list}
+    \label{fig:heap_linkedlist}
+\end{figure}
+
+\begin{itemize}
+    \item A \textbf{header page} points to two doubly linked lists: one of \textbf{full pages} and one of \textbf{pages with free space}.
+    \item Each page stores a pointer to the next page and the previous page.
+\end{itemize}
+
+\textbf{Problem:} To insert a record, we need a page with enough free space. We may have to walk many links in the free-space list before finding one that fits (e.g., for a 20-byte record, many free pages might not have 20 bytes left). Retrieval of a specific record by ID also requires walking through pages sequentially.
+
+\subsection{Design 2: Page Directory}
+
+\begin{itemize}
+\begin{figure}[H]
+    \centering  \includegraphics[width=0.4\textwidth]{images/heap_directory.png}
+    \caption{Heap file organized using a directory}
+    \label{fig:heap_map}
+\end{figure}
+    \item A \textbf{directory} stores, for each page, a pointer to the page and the amount of free space it has.
+    \item To insert, look up the directory for a page with sufficient space and jump directly to it---no linked list traversal.
+    \item The directory can itself span multiple pages (a ``directory of directories'') if needed, though too many layers hit diminishing returns.
+\end{itemize}
+
+\textbf{Improvement over linked list:} Insertion is faster because we can locate a suitable page in one lookup instead of walking a chain. Full pages still appear in the directory (with free space recorded as zero).

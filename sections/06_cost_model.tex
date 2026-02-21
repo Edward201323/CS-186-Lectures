@@ -1,0 +1,85 @@
+\section{Cost Model}
+
+To compare different file organizations, we need a quantitative way to measure performance. Unlike Big-O analysis, which ignores constant factors, \textbf{constant factors matter} in database systems.
+
+\subsection{Why I/O Cost?}
+
+Different hardware (spinning disks, SSDs) have different speeds, so wall-clock time is not a portable metric. Instead, we count \textbf{I/O operations}: the number of page reads and writes. This provides a hardware-independent basis for comparison.
+
+To convert to actual time, multiply by a technology-specific factor $D$ (average time to read/write one page).
+
+\subsection{Simplifying Assumptions}
+
+For our analysis, we make several simplifications:
+
+\begin{itemize}
+    \item Ignore the difference between sequential and random reads.
+    \item Ignore prefetching.
+    \item \textbf{Ignore CPU cost} Only I/O operations count.
+    \item Ignore metadata and header overhead.
+    \item Data must be brought into memory before processing; writes must go back to disk. Both incur I/O cost.
+\end{itemize}
+
+\subsection{Operations of Interest}
+
+We analyze five operations on two file types (heap file and sorted file):
+
+\begin{enumerate}
+    \item \textbf{Scan:} Read all records in the file.
+    \item \textbf{Equality search:} Find a record with a specific key value.
+    \item \textbf{Range search:} Find all records with keys in a given range.
+    \item \textbf{Insert:} Add a new record.
+    \item \textbf{Delete:} Remove a record.
+\end{enumerate}
+
+
+\subsection{Key Variables}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{cl}
+        \toprule
+        \textbf{Variable} & \textbf{Meaning} \\
+        \midrule
+        $B$ & Number of blocks (pages) \\
+        $R$ & Average number of records per page \\
+        $D$ & Time to read or write one block to disk\\
+        \bottomrule
+    \end{tabular}
+    \caption{Cost model variables}
+    \label{tab:cost_variables}
+\end{table}
+
+\subsection{Cost Summary}
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{lcc}
+        \toprule
+        \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} \\
+        \midrule
+        Scan all records & $B \cdot D$ & $B \cdot D$ \\
+        Equality Search & $0.5 \cdot B \cdot D$ & $(\log_2 B) \cdot D$ \\
+        Range Search & $B \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
+        Insert & $2 \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
+        Delete & $(0.5 \cdot B + 1) \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
+        \bottomrule
+    \end{tabular}
+    \caption{I/O cost comparison (average case)}
+    \label{tab:cost_comparison}
+\end{table}
+
+\subsection{The Core Trade-off}
+
+\begin{itemize}
+    \item \textbf{Heap files} are fast for insertions (just append) but slow for searches (must scan).
+    \item \textbf{Sorted files} are fast for searches (binary search) but slow for insertions and deletions (must maintain order).
+\end{itemize}
+
+The optimal choice depends on the workload:
+\begin{itemize}
+    \item Read-heavy $\rightarrow$ sorted file
+    \item Write-heavy $\rightarrow$ heap file
+\end{itemize}
+
+Neither structure excels at both. This limitation motivates the need for \textbf{indexes}, which aim to provide fast searches without expensive insertions and deletions.

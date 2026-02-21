@@ -1,0 +1,12 @@
+\section{Disk I/O and Prefetching}
+
+Since disk access is expensive, we want to \textbf{amortize} the cost by doing as much useful work per access as possible:
+
+\begin{itemize}
+    \item If pages for a table are stored \textbf{sequentially on disk}, we can read them in one sweep rather than jumping the disk arm around. This is much cheaper than scattered reads.
+    \item If we can \textbf{predict future reads}, we can prefetch. Two sources of prediction:
+    \begin{itemize}
+        \item \textbf{The query itself:} \texttt{SELECT * FROM sailors} tells us we need every page of the sailors table.
+        \item \textbf{Past access patterns:} If a table has been read frequently (e.g., during a ticket sale), it will likely be read again soon.
+    \end{itemize}
+\end{itemize}

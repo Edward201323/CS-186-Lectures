@@ -1,335 +1,6 @@
-\documentclass[11pt]{article}
-\usepackage[margin=1in]{geometry}
-\usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{booktabs}
-\usepackage{enumitem}
-\usepackage{float}
-\usepackage{graphicx}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta, positioning}
-
-\title{Disk and File Structures --- Lecture Notes}
-\author{CS186 - Database Systems}
-\date{Lecture 3 -- January 28, 2026}
-
-\begin{document}
-
-\maketitle
-
-\section{The Big Picture: DBMS Architecture}
-
-A user writes a SQL query, and somehow the right data comes back. In between, the DBMS handles several layers of work:
-
-\begin{enumerate}
-    \item \textbf{Parsing:} Check that the query is valid---tables and columns exist, syntax is correct.
-    \item \textbf{Query planning and optimization:} Find an efficient way to execute the query (covered in later lectures).
-    \item \textbf{Execution:} Run the plan, which ultimately requires reading data from disk.
-    \item \textbf{File and disk management:} Decide which files to open, which pages to read, and how to transfer data between disk and memory.
-\end{enumerate}
-
-Each layer is an \textbf{abstraction} that hides the complexity beneath it. The user sees a flat relation with rows and columns. Underneath, the data may live in heap files, spread across disk pages, organized in packed or slotted layouts---none of which the user needs to know. This is \textbf{physical data independence}.
-
-This lecture focuses on the bottom layers: how the DBMS stores data on disk and organizes it within files and pages.
-
-\section{The DBMS Manages Its Own Storage}
-
-A key design decision: \textbf{the data base management system does not rely on the OS file system for page management.}
-
-The OS treats the DBMS as just another application. It doesn't know the query workload, so it can't make smart decisions like prefetching pages for a \texttt{SELECT *} scan. Instead, the DBMS asks the OS for one large file and manages pages within it internally. This lets the DBMS:
-
-\begin{itemize}
-    \item Control which pages are read and when.
-    \item Prefetch pages when the query makes future reads predictable (e.g., a full table scan on a table spanning 10 blocks means we know we need all 10).
-    \item Exploit knowledge of access patterns---for example, if a concert ticket table is being hit heavily, prefetch its blocks in advance.
-\end{itemize}
-
-For this course, assume \textbf{one file per relation} on a single disk.
-
-
-\section{Amortizing Disk I/O and Prefetching}
-
-Since disk access is expensive, we want to \textbf{amortize} the cost by doing as much useful work per access as possible:
-
-\begin{itemize}
-    \item If pages for a table are stored \textbf{sequentially on disk}, we can read them in one sweep rather than jumping the disk arm around. This is much cheaper than scattered reads.
-    \item If we can \textbf{predict future reads}, we can prefetch. Two sources of prediction:
-    \begin{itemize}
-        \item \textbf{The query itself:} \texttt{SELECT * FROM sailors} tells us we need every page of the sailors table.
-        \item \textbf{Past access patterns:} If a table has been read frequently (e.g., during a ticket sale), it will likely be read again soon.
-    \end{itemize}
-\end{itemize}
-
-
-\section{Heap File Organization}
-
-A \textbf{heap file} is the simplest file structure: records are stored with no particular ordering. As tuples are inserted or deleted, pages are allocated or freed as needed.
-
-To support basic operations (scan all records, insert, delete, retrieve by record ID), we need to track which pages exist and how much free space each has.
-
-\subsection{Design 1: Linked List}
-
-\begin{figure}[H]
-    \centering  \includegraphics[width=0.8\textwidth]{images/heap_linkedlist.png}
-    \caption{Heap file organized as a doubly linked list}
-    \label{fig:heap_linkedlist}
-\end{figure}
-
-\begin{itemize}
-    \item A \textbf{header page} points to two doubly linked lists: one of \textbf{full pages} and one of \textbf{pages with free space}.
-    \item Each page stores a pointer to the next page and the previous page.
-\end{itemize}
-
-\textbf{Problem:} To insert a record, we need a page with enough free space. We may have to walk many links in the free-space list before finding one that fits (e.g., for a 20-byte record, many free pages might not have 20 bytes left). Retrieval of a specific record by ID also requires walking through pages sequentially.
-
-\subsection{Design 2: Page Directory}
-
-\begin{itemize}
-\begin{figure}[H]
-    \centering  \includegraphics[width=0.4\textwidth]{images/heap_directory.png}
-    \caption{Heap file organized using a directory}
-    \label{fig:heap_map}
-\end{figure}
-    \item A \textbf{directory} stores, for each page, a pointer to the page and the amount of free space it has.
-    \item To insert, look up the directory for a page with sufficient space and jump directly to it---no linked list traversal.
-    \item The directory can itself span multiple pages (a ``directory of directories'') if needed, though too many layers hit diminishing returns.
-\end{itemize}
-
-\textbf{Improvement over linked list:} Insertion is faster because we can locate a suitable page in one lookup instead of walking a chain. Full pages still appear in the directory (with free space recorded as zero).
-
-
-\section{Page Layout: How Records Sit Inside a Page}
-
-Each page has a \textbf{header} with metadata: number of records, free space available, and pointers to other pages (if using the linked list design). The rest of the page holds records.
-
-Two key design dimensions: Is the record size \textbf{fixed or variable}? And do we keep the page \textbf{packed or unpacked}?
-
-\newpage
-\subsection{Fixed-Length Records, Packed}
-
-Records are stored contiguously, one after another, with no gaps.
-
-\begin{figure}[H]
-    \centering    \includegraphics[width=0.5\linewidth]{images/packed_records.png}
-    \caption{Records Packed}
-    \label{fig:placeholder}
-\end{figure}
-
-
-\begin{itemize}
-    \item \textbf{Record ID} = (page ID, slot number). Locating record $i$: offset $= \text{header size} + i \times \text{record size}$. Simple arithmetic.
-    \item \textbf{Insert:} Append at the end of the occupied region.
-    \item \textbf{Delete:} Remove the record, then shift all subsequent records up to fill the gap (\textbf{consolidation}).
-    \item \textbf{Scan:} Read from start to end. No gaps to skip. Very efficient.
-\end{itemize}
-
-\textbf{Trade-off:} Scans are fast (no holes), but deletions are expensive (must shift records to stay packed). Good when full scans are common and deletions are rare.
-
-\subsection{Fixed-Length Records, Unpacked (Bitmap)}
-
-Records occupy fixed slots, but gaps are allowed.
-
-\begin{figure}[H]
-    \centering    \includegraphics[width=0.5\linewidth]{images/unpacked_records.png}
-    \caption{Records Unpacked}
-    \label{fig:placeholder}
-\end{figure}
-
-
-\begin{itemize}
-    \item A \textbf{bitmap} in the page header tracks which slots are occupied (1) and which are empty (0).
-    \item \textbf{Record ID} = (page ID, slot number). Locating a record still uses arithmetic, but we check the bitmap first.
-    \item \textbf{Insert:} Find an empty slot via the bitmap, write the record, flip the bit.
-    \item \textbf{Delete:} Flip the bit to 0. No consolidation needed.
-    \item \textbf{Scan:} Must consult the bitmap to skip empty slots. Gaps may also cause non-sequential disk reads within the page.
-\end{itemize}
-
-\textbf{Trade-off:} Deletions are cheap (just flip a bit), but scans are slightly more complex and may encounter holes. Good when deletions are frequent and full scans are less critical.
-
-\subsection{The Core Trade-off: Pack Now or Pay Later}
-
-\begin{itemize}
-    \item \textbf{Packed:} Pay at deletion time (consolidation) to keep things tidy. Scans are fast later.
-    \item \textbf{Unpacked:} Pay at scan time (skipping holes, checking bitmaps). Deletions are fast now.
-\end{itemize}
-
-The right choice depends on whether 
-there are frequent scans or frequent insertions and deletions.
-
-\subsection{Variable-Length Records: Slotted Page}
-
-When records have variable lengths, we cannot use simple arithmetic to locate records. Instead, we use a \textbf{slotted page} design.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.6\linewidth]{images/slotted_page.png}
-    \caption{Slotted Page Layout}
-    \label{fig:slotted_page}
-\end{figure}
-
-\begin{itemize}
-    \item A \textbf{slot directory} (also called the footer) stores metadata at one end of the page. Each slot entry contains a \textbf{pointer} to a record and optionally its length.
-    \item \textbf{Records} are stored at the opposite end of the page and grow toward the middle.
-    \item \textbf{Free space} sits between the slot directory and the records.
-    \item \textbf{Record ID} = (page ID, slot number). External references use slot numbers, not physical offsets.
-\end{itemize}
-
-\subsubsection*{Why Grow in Opposite Directions?}
-
-Since records are variable-length, we don't know how many will fit on a page. If the slot directory were at the top followed immediately by records, adding a new slot would require shifting all records which is expensive.
-
-By having the slot directory grow upward and records grow downward (or vice versa), we avoid this problem:
-\begin{itemize}
-    \item \textbf{Insert:} Add a new slot entry (grows toward middle), write the record (grows from other end). No shifting required.
-    \item \textbf{Page full:} When the two regions meet, allocate a new page.
-\end{itemize}
-
-\subsubsection*{Operations}
-
-\begin{itemize}
-    \item \textbf{Insert:} Find free space, write the record, add a slot entry pointing to it.
-    \item \textbf{Delete:} Mark the slot as empty. This leaves a hole in the record area.
-    \item \textbf{Compaction:} Periodically, the page can be \textbf{compacted}---records are moved to eliminate holes, and slot pointers are updated. Crucially, \textbf{slot numbers do not change}, so external references (from indexes or other pages) remain valid.
-    \item \textbf{Scan:} Iterate through the slot directory, following each pointer to read records.
-\end{itemize}
-
-\subsubsection*{Trade-offs}
-
-\begin{itemize}
-    \item \textbf{Flexibility:} Handles variable-length records gracefully.
-    \item \textbf{Stable references:} Slot numbers stay constant even when records move during compaction.
-    \item \textbf{Overhead:} Requires storing a pointer (and possibly length) for every record, unlike fixed-length packed pages where position is implicit.
-\end{itemize}
-
-\textbf{Real-world usage:} PostgreSQL and MySQL both use slotted page designs. It is the standard approach for handling variable-length records in modern database systems.
-
-\section{Cost Model for File Operations}
-
-To compare different file organizations, we need a quantitative way to measure performance. Unlike Big-O analysis, which ignores constant factors, \textbf{constant factors matter} in database systems.
-
-\subsection{Why I/O Cost?}
-
-Different hardware (spinning disks, SSDs) have different speeds, so wall-clock time is not a portable metric. Instead, we count \textbf{I/O operations}: the number of page reads and writes. This provides a hardware-independent basis for comparison.
-
-To convert to actual time, multiply by a technology-specific factor $D$ (average time to read/write one page).
-
-\subsection{Simplifying Assumptions}
-
-For our analysis, we make several simplifications:
-
-\begin{itemize}
-    \item Ignore the difference between sequential and random reads.
-    \item Ignore prefetching.
-    \item \textbf{Ignore CPU cost} Only I/O operations count.
-    \item Ignore metadata and header overhead.
-    \item Data must be brought into memory before processing; writes must go back to disk. Both incur I/O cost.
-\end{itemize}
-
-\subsection{Operations of Interest}
-
-We analyze five operations on two file types (heap file and sorted file):
-
-\begin{enumerate}
-    \item \textbf{Scan:} Read all records in the file.
-    \item \textbf{Equality search:} Find a record with a specific key value.
-    \item \textbf{Range search:} Find all records with keys in a given range.
-    \item \textbf{Insert:} Add a new record.
-    \item \textbf{Delete:} Remove a record.
-\end{enumerate}
-
-
-\subsection{Key Variables}
-
-\begin{table}[H]
-    \centering
-    \begin{tabular}{cl}
-        \toprule
-        \textbf{Variable} & \textbf{Meaning} \\
-        \midrule
-        $B$ & Number of blocks (pages) \\
-        $R$ & Average number of records per page \\
-        $D$ & Time to read or write one block to disk\\
-        \bottomrule
-    \end{tabular}
-    \caption{Cost model variables}
-    \label{tab:cost_variables}
-\end{table}
-
-\subsection{Cost Summary}
-
-\begin{table}[H]
-    \centering
-    \begin{tabular}{lcc}
-        \toprule
-        \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} \\
-        \midrule
-        Scan all records & $B \cdot D$ & $B \cdot D$ \\
-        Equality Search & $0.5 \cdot B \cdot D$ & $(\log_2 B) \cdot D$ \\
-        Range Search & $B \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
-        Insert & $2 \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
-        Delete & $(0.5 \cdot B + 1) \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
-        \bottomrule
-    \end{tabular}
-    \caption{I/O cost comparison (average case)}
-    \label{tab:cost_comparison}
-\end{table}
-
-\subsection{The Core Trade-off}
-
-\begin{itemize}
-    \item \textbf{Heap files} are fast for insertions (just append) but slow for searches (must scan).
-    \item \textbf{Sorted files} are fast for searches (binary search) but slow for insertions and deletions (must maintain order).
-\end{itemize}
-
-The optimal choice depends on the workload:
-\begin{itemize}
-    \item Read-heavy $\rightarrow$ sorted file
-    \item Write-heavy $\rightarrow$ heap file
-\end{itemize}
-
-Neither structure excels at both. This limitation motivates the need for \textbf{indexes}, which aim to provide fast searches without expensive insertions and deletions.
-
-\section{Motivation for Indexes}
-
-From the previous lecture, we saw the fundamental trade-off between heap files and sorted files:
-
-\begin{table}[H]
-    \centering
-    \begin{tabular}{lcc}
-        \toprule
-        \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} \\
-        \midrule
-        Equality Search & $0.5 \cdot B \cdot D$ & $(\log_2 B) \cdot D$ \\
-        Insert & $2 \cdot D$ & $((\log_2 B) + B) \cdot D$ \\
-        \bottomrule
-    \end{tabular}
-    \caption{The core trade-off}
-    \label{tab:tradeoff}
-\end{table}
-
-\begin{itemize}
-    \item \textbf{Heap files:} Fast inserts (just append), slow searches (must scan).
-    \item \textbf{Sorted files:} Fast searches (binary search), slow inserts (must shift records to maintain order).
-\end{itemize}
-
-\textbf{Goal:} Can we achieve fast searches \textit{without} expensive inserts? This motivates the need for indexes.
-
-\subsection{What Is an Index?}
-
-An index is a data structure that allows us to look up records using a \textbf{search key}, similar to the index at the back of a book.
-
-\begin{itemize}
-    \item The search key does not have to be the primary key.
-    \item Can be built on any column(s) we frequently query.
-    \item Can be non-unique (multiple records may share the same key).
-\end{itemize}
-
-\textbf{Example:} If queries frequently search by \texttt{student\_id}, build an index on that column. If queries search by \texttt{major}, build an index on \texttt{major} instead.
-
-
 \section{B+ Trees}
 
-\subsection{First Idea: Sorted File with Holes}
+\subsection{Sorted File with Holes}
 
 Start with a heap file, sort it, but leave empty slots in each page.
 
@@ -343,7 +14,7 @@ Start with a heap file, sort it, but leave empty slots in each page.
 
 \textbf{Remaining problem:} Binary search still has a fanout of 2 (we can only go left or right at each step). Can we do better?
 
-\subsection{Second Idea: Separate Keys from Data}
+\subsection{Separating Keys from Data}
 
 Split storage into two types of pages:
 
@@ -389,7 +60,7 @@ This is analogous to a book index. At the back of a textbook, you might find:
 
 You don't store the entire explanation of B+ trees in the index but rather just enough to tell you where to find it. Database indexes work the same way.
 
-\subsection{Third Idea: Build a Tree on Top of Keys}
+\subsection{Tree Structure}
 
 Instead of binary search on key pages, build a tree structure with \textbf{high fanout}.
 
@@ -624,14 +295,14 @@ So we must choose either the \textbf{largest key in the left subtree} or the \te
 
 This may trigger underflow handling in that leaf, but we just fix it buy borrowing a key from a sibling or merging with a sibling.
 
-\section{Ways to Organize Leaf Pages}
+\subsection{Leaf Page Organization}
 
 B+ tree leaf pages can be organized in different ways depending on how they connect to the actual data. This choice affects lookup speed, storage requirements, and how many indexes you can create.
 
 We want multiple B+ trees because a single B+ tree can only speed up queries on the column(s) it's indexed on. For example, if you have a B+ tree on \texttt{player\_id}, a query like \texttt{WHERE name = 'Joe'} can't be used. You'd need a separate B+ tree on \texttt{name}. Since we often want multiple indexes (B+ trees) per table, the way we organize leaf pages matters.
 
 
-\subsection{Alternative 1: Storing By Value}
+\subsubsection*{Alternative 1: Storing By Value}
 \begin{itemize}
     \item Store the actual tuples directly in the leaf pages
     \item One fewer pointer to follow allowing faster lookups
@@ -639,25 +310,25 @@ We want multiple B+ trees because a single B+ tree can only speed up queries on 
     \item You can only have ONE such index (B+ Tree) per table. If you want a second index, you have to duplicate your data.
 \end{itemize}
 
-\subsection{Alternative 2: By Reference}
+\subsubsection*{Alternative 2: By Reference}
 \begin{itemize}
     \item Leaf pages store pointers (page number + record ID) to tuples
     \item This is the standard approach we've been using
     \item Allows multiple indexes on the same table  (each index just stores pointers to the same data)
 \end{itemize}
 
-\subsection{Alternative 3: List of References}
+\subsubsection*{Alternative 3: List of References}
 \begin{itemize}
     \item Like Alternative 2, but stores a \textit{list} of pointers per key
     \item Useful when multiple records share the same key (e.g., many players named ``Joe'')
     \item To find a specific record among duplicates, you have to follow each pointer and check one by one
 \end{itemize}
 
-\section{Clustered vs Unclustered Indexes}
+\subsection{Clustered vs Unclustered}
 
 Clustering refers to whether the data pages themselves are sorted by the index key. This affects how efficiently we can read data, especially for range queries.
 
-\subsection{Clustered Index}
+\subsubsection*{Clustered Index}
 \begin{itemize}
     \item The data pages are \textbf{sorted} by the index key (essentially a sorted file with a B+ tree on top)
     \item Pointers from leaf pages go in parallel, no criss-crossing
@@ -667,7 +338,7 @@ Clustering refers to whether the data pages themselves are sorted by the index k
     \item In practice, pages are kept about $\frac{2}{3}$ full to leave room for future inserts
 \end{itemize}
 
-\subsection{Unclustered Index}
+\subsubsection*{Unclustered Index}
 \begin{itemize}
     \item The data pages are a \textbf{heap} (unsorted)---the B+ tree is built on top of unordered data
     \item Pointers from leaf pages go everywhere
@@ -675,13 +346,13 @@ Clustering refers to whether the data pages themselves are sorted by the index k
     \item \textbf{Con:} Range queries are slow. You may have to jump to many different pages
 \end{itemize}
 
-\subsection{Why Only One Clustered Index Per Table?}
+\subsubsection*{Why Only One Clustered Index Per Table?}
 
 You can only sort your data \textbf{one way}. Think of it like arranging chairs in a room. You can sort them by age or by color, but not both at the same time unless you duplicate them.
 
 Since a clustered index requires the data pages to be sorted by that index's key, you can only have \textbf{one clustered index per table}. Any additional indexes must be unclustered (they just point to wherever the data happens to be).
 
-\subsection{Sequential vs Random I/O}
+\subsubsection*{Sequential vs Random I/O}
 
 This matters because of how disks work:
 \begin{itemize}
@@ -691,7 +362,7 @@ This matters because of how disks work:
 
 For SSDs, this difference is smaller, but sequential reads are still faster.
 
-\section{Using B+ Trees for Queries}
+\subsection{Composite Indexes}
 
 When you create a composite index on multiple columns, the order matters. The data is sorted by the first column, then by the second column as a tiebreaker, and so on.
 
@@ -713,11 +384,11 @@ Suppose we have a B+ tree index on \texttt{(birth\_year, weight)}. Which queries
 
 The first column in a composite index \texttt{(birth\_year, weight)} has more significance. You can only use the index efficiently if your query includes the first column. Queries on just the second column can't use the index.
 
-\section{I/O Cost Analysis}
+\subsection{I/O Cost}
 
 We want to compare B+ trees against heap files and sorted files. Remember: we count I/O operations (page reads/writes), not Big-O complexity. Constant factors matter in databases.
 
-\subsection{Key Variables}
+\subsubsection*{Key Variables}
 
 \begin{table}[H]
     \centering
@@ -734,7 +405,7 @@ We want to compare B+ trees against heap files and sorted files. Remember: we co
     \end{tabular}
 \end{table}
 
-\subsection{Why Fanout Matters}
+\subsubsection*{Why Fanout Matters}
 
 Both sorted files and B+ trees have logarithmic lookup time, but:
 \begin{itemize}
@@ -750,7 +421,7 @@ $\log_{2000}(n)$ is \textbf{much smaller} than $\log_2(n)$. For 1 million record
 
 This is why B+ trees beat sorted files---same Big-O, but the constant factor is huge.
 
-\subsection{Cost Formulas}
+\subsubsection*{Cost Formulas}
 
 \textbf{Scan all records:}
 \[
@@ -774,7 +445,7 @@ The $1.5$ factor comes from pages being $\frac{2}{3}$ full (we leave room for in
 \]
 Find the starting point, then read all matching pages. In a clustered index, these pages are sequential.
 
-\subsection{Cost Comparison}
+\subsubsection*{Cost Comparison}
 
 \begin{table}[H]
     \centering
@@ -790,7 +461,7 @@ Find the starting point, then read all matching pages. In a clustered index, the
     \caption{I/O cost comparison (in page reads, $D$ omitted)}
 \end{table}
 
-\subsection{Key Takeaways}
+\subsubsection*{Key Takeaways}
 
 \begin{itemize}
     \item \textbf{Constant factors matter}: $\log_F$ vs $\log_2$ makes a big difference when $F \approx 2000$
@@ -798,6 +469,3 @@ Find the starting point, then read all matching pages. In a clustered index, the
     \item \textbf{Clustered indexes} allow sequential reads for range queries; unclustered indexes require random reads
     \item The $1.5\times$ scan cost comes from leaving pages $\frac{2}{3}$ full for future inserts
 \end{itemize}
-
-
-\end{document}
