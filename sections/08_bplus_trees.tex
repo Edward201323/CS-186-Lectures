@@ -420,15 +420,12 @@ $\log_{2000}(n)$ is \textbf{much smaller} than $\log_2(n)$. For 1 million record
 \end{itemize}
 
 This is why B+ trees beat sorted files---same Big-O, but the constant factor is huge.
-
 \subsubsection*{Cost Formulas}
-
 \textbf{Scan all records:}
 \[
 \text{Cost} = 1.5 \cdot B \cdot D
 \]
 The $1.5$ factor comes from pages being $\frac{2}{3}$ full (we leave room for inserts). We don't need the index for this---just read all data pages.
-
 \textbf{Equality search:}
 \[
 \text{Cost} = \left( \log_F \left( \frac{B \cdot R}{E} \right) + 2 \right) \cdot D
@@ -438,15 +435,12 @@ The $1.5$ factor comes from pages being $\frac{2}{3}$ full (we leave room for in
     \item $+1$: accounts for reading the root
     \item $+1$: fetch the actual data page (following the pointer)
 \end{itemize}
-
 \textbf{Range search:}
 \[
 \text{Cost} = \left( \log_F \left( \frac{B \cdot R}{E} \right) + \text{num\_pages} \right) \cdot D
 \]
 Find the starting point, then read all matching pages. In a clustered index, these pages are sequential.
-
 \subsubsection*{Cost Comparison}
-
 \begin{table}[H]
     \centering
     \begin{tabular}{lccc}
@@ -454,15 +448,13 @@ Find the starting point, then read all matching pages. In a clustered index, the
         \textbf{Operation} & \textbf{Heap File} & \textbf{Sorted File} & \textbf{B+ Tree (Clustered)} \\
         \midrule
         Scan & $B$ & $B$ & $1.5B$ \\
-        Equality Search & $0.5B$ & $\log_2 B$ & $\log_F B$ \\
-        Range Search & $B$ & $\log_2 B + \text{pages}$ & $\log_F B + \text{pages}$ \\
+        Equality Search & $0.5B$ & $\log_2 B$ & $\log_F \left( \frac{B \cdot R}{E} \right) + 2$ \\
+        Range Search & $B$ & $\log_2 B + \text{pages}$ & $\log_F \left( \frac{B \cdot R}{E} \right) + \text{pages}$ \\
         \bottomrule
     \end{tabular}
     \caption{I/O cost comparison (in page reads, $D$ omitted)}
 \end{table}
-
 \subsubsection*{Key Takeaways}
-
 \begin{itemize}
     \item \textbf{Constant factors matter}: $\log_F$ vs $\log_2$ makes a big difference when $F \approx 2000$
     \item \textbf{Sequential I/O $\gg$ Random I/O}: on spinning disks, sequential reads are $\sim$100$\times$ faster
